@@ -57,6 +57,8 @@ model_reg = None
 
 # Cargar modelos al iniciar
 @app.on_event("startup")
+async def startup_event():
+    print("⚡ Evento startup iniciado")
 async def load_models():
     global classifier, model_reg
     
@@ -93,6 +95,13 @@ async def load_models():
     except Exception as e:
         print(f"❌ Error cargando modelo de regresión: {e}")
         model_reg = None
+
+    # AGREGAR ESTO AL FINAL
+    print("="*50)
+    print(f"✅ Clasificador cargado: {classifier is not None}")
+    print(f"✅ Modelo regresión cargado: {model_reg is not None}")
+    print("="*50)
+    print("🟢 TODOS LOS MODELOS CARGADOS - APLICACIÓN LISTA")
 
 # Transformaciones para PyTorch
 transform_reg = transforms.Compose([
@@ -187,4 +196,12 @@ async def health_check():
         "status": "OK" if models_loaded else "ERROR",
         "models_loaded": models_loaded,
         "device": str(device)
+    }
+
+
+@app.get("/test")
+async def test_endpoint():
+    return {
+        "status": "OK",
+        "port_info": f"La aplicación debería estar en el puerto {os.getenv('PORT', 8000)}"
     }
