@@ -11,8 +11,8 @@ import torch.nn as nn
 from pydantic import BaseModel, Field
 from typing import Union
 import os
-import socket
 import time
+import threading
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "-1"  # Deshabilita cualquier GPU
 device = torch.device("cpu")  # Forzar PyTorch a usar solo CPU
@@ -48,89 +48,72 @@ app.add_middleware(
     allow_headers=["*"],  # Permite todos los headers
 )
 
-# Endpoint raíz para verificación de inicio
-@app.get("/")
-async def root():
-    return {"message": "Banana Ripeness Predictor API is initializing. Please wait."}
-
-# Endpoint de live para Render (responde inmediatamente)
-@app.get("/live")
-async def liveness_check():
-    return {"status": "alive", "models_loaded": classifier is not None and model_reg is not None}
-
-# Variables globales para los modelos
+# Variables globales para los modelos y estado de carga
 classifier = None
 model_reg = None
+models_loaded = False
+loading_in_progress = False
+load_lock = threading.Lock()
 
-# Cargar modelos al iniciar
-@app.on_event("startup")
-async def load_models():
-    global classifier, model_reg
-    start_time = time.time()  # Registrar tiempo de inicio
-    print("⚡ Evento startup iniciado - Cargando modelos...")
+def load_models():
+    global classifier, model_reg, models_loaded, loading_in_progress
     
-    # Diagnóstico inicial
-    hostname = socket.gethostname()
-    print(f"🔍 Hostname: {hostname}")
-    print(f"🔍 PORT env var: {os.getenv('PORT', 'No definido')}")
-    print(f"🔍 Directorio actual: {os.getcwd()}")
+    # Si ya están cargados o se está cargando, salir
+    if models_loaded or loading_in_progress:
+        return
     
-    # Limpiar sesión de TensorFlow
-    tf.keras.backend.clear_session()
+    with load_lock:
+        if models_loaded or loading_in_progress:
+            return
+            
+        loading_in_progress = True
+        start_time = time.time()
+        print("⚡ Cargando modelos bajo demanda...")
+        
+        try:
+            # Limpiar sesión de TensorFlow
+            tf.keras.backend.clear_session()
+            tf.config.set_visible_devices([], 'GPU')  # Forzar CPU
+            
+            # Construir rutas a los modelos
+            model_dir = os.path.join(os.path.dirname(__file__), "models")
+            classifier_path = os.path.join(model_dir, "clasificacion_model_v4.h5")
+            regression_path = os.path.join(model_dir, "best_banana_ripeness_regression.pth")
+            
+            # Cargar modelo de clasificación en CPU
+            classifier = tf.keras.models.load_model(classifier_path)
+            print("✅ Modelo de clasificación cargado en CPU")
+            
+            # Cargar modelo de regresión
+            model_reg = create_resnet_model().to(device)
+            state_dict = torch.load(regression_path, map_location=device)
+            new_state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+            model_reg.load_state_dict(new_state_dict, strict=False)
+            model_reg.eval()
+            print("✅ Modelo de regresión cargado correctamente")
+            
+            # Marcar como cargados
+            models_loaded = True
+            load_time = time.time() - start_time
+            print(f"⏱️ Tiempo total de carga: {load_time:.2f} segundos")
+            
+        except Exception as e:
+            print(f"❌ Error crítico cargando modelos: {e}")
+            import traceback
+            traceback.print_exc()
+            
+        finally:
+            loading_in_progress = False
 
-    # Forzar TensorFlow a usar CPU
-    tf.config.set_visible_devices([], 'GPU')
-    
-    # Construir rutas a los modelos
-    model_dir = os.path.join(os.path.dirname(__file__), "models")
-    classifier_path = os.path.join(model_dir, "clasificacion_model_v4.h5")
-    regression_path = os.path.join(model_dir, "best_banana_ripeness_regression.pth")
-    
-    print(f"Intentando cargar modelo de clasificación desde: {classifier_path}")
-    print(f"Intentando cargar modelo de regresión desde: {regression_path}")
-    
-    # Verificar existencia de archivos
-    try:
-        print(f"¿Existe clasificacion_model_v4.h5? {os.path.exists(classifier_path)}")
-        print(f"¿Existe best_banana_ripeness_regression.pth? {os.path.exists(regression_path)}")
-        print(f"Contenido de {model_dir}: {os.listdir(model_dir)}")
-        print(f"Tamaño clasificacion_model_v4.h5: {os.path.getsize(classifier_path)} bytes")
-        print(f"Tamaño best_banana_ripeness_regression.pth: {os.path.getsize(regression_path)} bytes")
-    except Exception as e:
-        print(f"❌ Error verificando archivos: {e}")
-    
-    # Cargar modelo de clasificación en CPU
-    try:
-        classifier = tf.keras.models.load_model(classifier_path)
-        print("✅ Modelo de clasificación cargado en CPU")
-    except Exception as e:
-        print(f"❌ Error cargando modelo de clasificación: {e}")
-        print(f"Detalle completo: {str(e)}")
-        classifier = None
-    
-    # Cargar modelo de regresión
-    try:
-        model_reg = create_resnet_model().to(device)
-        state_dict = torch.load(regression_path, map_location=device)
-        new_state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
-        model_reg.load_state_dict(new_state_dict, strict=False)
-        model_reg.eval()
-        print("✅ Modelo de regresión cargado correctamente")
-    except Exception as e:
-        print(f"❌ Error cargando modelo de regresión: {e}")
-        print(f"Detalle completo: {str(e)}")
-        model_reg = None
+# Endpoint raíz
+@app.get("/")
+async def root():
+    return {"message": "Banana Ripeness Predictor API"}
 
-    # Verificación final
-    load_time = time.time() - start_time  # Calcular tiempo total de carga
-    print("="*50)
-    print(f"✅ Clasificador cargado: {classifier is not None}")
-    print(f"✅ Modelo regresión cargado: {model_reg is not None}")
-    print(f"⏱️ Tiempo total de carga: {load_time:.2f} segundos")
-    if load_time > 20:
-        print("⚠️ ADVERTENCIA: La carga de modelos está tardando más de 20 segundos")
-    print("="*50)
-    print("🟢 TODOS LOS MODELOS CARGADOS - APLICACIÓN LISTA")
+# Endpoint de live para Render
+@app.get("/live")
+async def liveness_check():
+    return {"status": "alive", "models_loaded": models_loaded}
 
 # Transformaciones para PyTorch
 transform_reg = transforms.Compose([
@@ -140,17 +123,23 @@ transform_reg = transforms.Compose([
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
 
-# Modelo de respuesta actualizado
+# Modelo de respuesta
 class PredictionResult(BaseModel):
     is_banana: bool
     days_remaining: Union[float, None] = Field(None)
     message: str
 
-# Endpoint de predicción
+# Endpoint de predicción (con carga diferida)
 @app.post("/predict", response_model=PredictionResult)
 async def predict_banana(file: UploadFile = File(...)):
+    global models_loaded
+    
+    # Cargar modelos si aún no están cargados
+    if not models_loaded:
+        load_models()
+    
     # Verificar que los modelos estén cargados
-    if classifier is None or model_reg is None:
+    if not models_loaded or classifier is None or model_reg is None:
         raise HTTPException(
             status_code=503,
             detail="Los modelos no están cargados correctamente. Intente más tarde."
@@ -167,7 +156,6 @@ async def predict_banana(file: UploadFile = File(...)):
         # Leer la imagen
         contents = await file.read()
         img = Image.open(io.BytesIO(contents)).convert('RGB')
-        print(f"Imagen recibida: {file.filename}, tamaño: {img.size}")
         
         # --- Clasificación ---
         # Preprocesar imagen para TensorFlow
@@ -179,7 +167,6 @@ async def predict_banana(file: UploadFile = File(...)):
         # Predecir con TensorFlow en CPU
         clf_pred = classifier.predict(img_tf, verbose=0)[0][0]
         banana_prob = 1 - clf_pred
-        print(f"Probabilidad de ser plátano: {banana_prob:.4f}")
         
         # Si no es plátano
         if banana_prob < 0.5:
@@ -190,11 +177,6 @@ async def predict_banana(file: UploadFile = File(...)):
             )
         
         # --- Regresión ---
-        # Limpiar memoria
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        
         # Preprocesar imagen para PyTorch
         img_reg = transform_reg(img)
         img_reg = img_reg.unsqueeze(0).to(device)
@@ -220,9 +202,8 @@ async def predict_banana(file: UploadFile = File(...)):
 # Endpoint de verificación de salud
 @app.get("/health")
 async def health_check():
-    models_loaded = classifier is not None and model_reg is not None
     return {
-        "status": "OK" if models_loaded else "ERROR",
+        "status": "OK" if models_loaded else "WARMING_UP",
         "models_loaded": models_loaded,
         "device": str(device)
     }
@@ -231,8 +212,6 @@ async def health_check():
 async def test_endpoint():
     return {
         "status": "OK",
-        "port_info": f"La aplicación debería estar en el puerto {os.getenv('PORT', 8000)}",
-        "working_dir": os.getcwd(),
-        "files_in_app": os.listdir("app"),
-        "files_in_models": os.listdir("app/models") if os.path.exists("app/models") else "No existe"
+        "models_loaded": models_loaded,
+        "loading_in_progress": loading_in_progress
     }
