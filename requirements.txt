@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+tensorflow==2.18.0
+torch
+torchvision
+pillow
+python-multipart
+pydantic
+numpy
+matplotlib
