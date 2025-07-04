@@ -8,7 +8,8 @@ import tensorflow as tf
 import torch
 from torchvision import models, transforms
 import torch.nn as nn
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from typing import Union
 import os
 
 # Configuración de dispositivos
@@ -94,10 +95,10 @@ transform_reg = transforms.Compose([
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
 
-# Modelo de respuesta
+# Modelo de respuesta actualizado
 class PredictionResult(BaseModel):
     is_banana: bool
-    days_remaining: float = None
+    days_remaining: Union[float, None] = Field(None)
     message: str
 
 # Endpoint de predicción
@@ -135,7 +136,7 @@ async def predict_banana(file: UploadFile = File(...)):
         banana_prob = 1 - clf_pred
         print(f"Probabilidad de ser plátano: {banana_prob:.4f}")
         
-        # Si no es plátano
+       # Si no es plátano - ahora con Field(None)
         if banana_prob < 0.5:
             return PredictionResult(
                 is_banana=False,
@@ -157,6 +158,10 @@ async def predict_banana(file: UploadFile = File(...)):
         with torch.no_grad():
             days = max(0, round(model_reg(img_reg).item(), 1))
         
+        # Asegurarse de que days_remaining no sea None
+        if days is None or not isinstance(days, (int, float)):
+            raise ValueError("El valor de 'days_remaining' no es válido.")
+        
         return PredictionResult(
             is_banana=True,
             days_remaining=days,
@@ -170,7 +175,6 @@ async def predict_banana(file: UploadFile = File(...)):
             status_code=500,
             detail=f"Error procesando la imagen: {str(e)}"
         )
-
 # Endpoint de verificación de salud
 @app.get("/health")
 async def health_check():
