@@ -12,9 +12,10 @@ from pydantic import BaseModel, Field
 from typing import Union
 import os
 
-# Configuración de dispositivos
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print("Dispositivo para PyTorch:", device)
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"  # Deshabilita cualquier GPU
+device = torch.device("cpu")  # Forzar PyTorch a usar solo CPU
+
+
 
 # Definir la arquitectura del modelo de regresión
 def create_resnet_model():
@@ -58,6 +59,9 @@ async def load_models():
     
     # Limpiar sesión de TensorFlow
     tf.keras.backend.clear_session()
+
+     # Forzar TensorFlow a usar CPU
+    tf.config.set_visible_devices([], 'GPU')  # <-- Agregar esto
     
     # Construir rutas a los modelos
     model_dir = os.path.join(os.path.dirname(__file__), "models")
