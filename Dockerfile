@@ -22,9 +22,13 @@ COPY . .
 
 # Verificación explícita de los modelos
 RUN echo "=== Verificando la presencia de los modelos ===" && \
-    ls -l /app/app/models && \
-    echo "Contenido de models:" && \
-    ls -l /app/app/models/*
+    ls -lR /app/app/models
 
-# Reemplaza el CMD actual con esto:
-CMD ["sh", "-c", "echo 'PORT variable: $PORT' && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+# Solución: Esperar 25 segundos antes de iniciar para evitar el escaneo temprano de Render
+CMD ["sh", "-c", "echo 'PORT variable: $PORT' && \
+     echo '=== Verificando modelos ===' && \
+     ls -l /app/app/models && \
+     echo '=== Esperando 25 segundos para iniciar ===' && \
+     sleep 25 && \
+     echo '=== Iniciando Uvicorn ===' && \
+     uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from typing import Union
 import os
 import socket
+import time
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "-1"  # Deshabilita cualquier GPU
 device = torch.device("cpu")  # Forzar PyTorch a usar solo CPU
@@ -52,14 +53,20 @@ app.add_middleware(
 async def root():
     return {"message": "Banana Ripeness Predictor API is initializing. Please wait."}
 
+# Endpoint de live para Render (responde inmediatamente)
+@app.get("/live")
+async def liveness_check():
+    return {"status": "alive", "models_loaded": classifier is not None and model_reg is not None}
+
 # Variables globales para los modelos
 classifier = None
 model_reg = None
 
-# Cargar modelos al iniciar (CORRECCIÓN CRÍTICA AQUÍ)
+# Cargar modelos al iniciar
 @app.on_event("startup")
 async def load_models():
     global classifier, model_reg
+    start_time = time.time()  # Registrar tiempo de inicio
     print("⚡ Evento startup iniciado - Cargando modelos...")
     
     # Diagnóstico inicial
@@ -87,6 +94,8 @@ async def load_models():
         print(f"¿Existe clasificacion_model_v4.h5? {os.path.exists(classifier_path)}")
         print(f"¿Existe best_banana_ripeness_regression.pth? {os.path.exists(regression_path)}")
         print(f"Contenido de {model_dir}: {os.listdir(model_dir)}")
+        print(f"Tamaño clasificacion_model_v4.h5: {os.path.getsize(classifier_path)} bytes")
+        print(f"Tamaño best_banana_ripeness_regression.pth: {os.path.getsize(regression_path)} bytes")
     except Exception as e:
         print(f"❌ Error verificando archivos: {e}")
     
@@ -113,9 +122,13 @@ async def load_models():
         model_reg = None
 
     # Verificación final
+    load_time = time.time() - start_time  # Calcular tiempo total de carga
     print("="*50)
     print(f"✅ Clasificador cargado: {classifier is not None}")
     print(f"✅ Modelo regresión cargado: {model_reg is not None}")
+    print(f"⏱️ Tiempo total de carga: {load_time:.2f} segundos")
+    if load_time > 20:
+        print("⚠️ ADVERTENCIA: La carga de modelos está tardando más de 20 segundos")
     print("="*50)
     print("🟢 TODOS LOS MODELOS CARGADOS - APLICACIÓN LISTA")
 
