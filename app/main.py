@@ -33,7 +33,7 @@ def create_resnet_model():
 # Inicializar la aplicación FastAPI
 app = FastAPI(
     title="Banana Ripeness Predictor",
-    description="API para predecir madurez de plátanos usando modelos de ML",
+    description="API para predecir madurez de plátanos usando modelos de DL",
     version="1.0.0"
 )
 
@@ -45,6 +45,11 @@ app.add_middleware(
     allow_methods=["*"],  # Permite todos los métodos
     allow_headers=["*"],  # Permite todos los headers
 )
+
+# Endpoint raíz para verificación de inicio (CRÍTICO PARA RENDER)
+@app.get("/")
+async def root():
+    return {"message": "Banana Ripeness Predictor API is initializing. Please wait."}
 
 # Variables globales para los modelos
 classifier = None
@@ -58,8 +63,8 @@ async def load_models():
     # Limpiar sesión de TensorFlow
     tf.keras.backend.clear_session()
 
-     # Forzar TensorFlow a usar CPU
-    tf.config.set_visible_devices([], 'GPU')  # <-- Agregar esto
+    # Forzar TensorFlow a usar CPU
+    tf.config.set_visible_devices([], 'GPU')
     
     # Construir rutas a los modelos
     model_dir = os.path.join(os.path.dirname(__file__), "models")
@@ -138,7 +143,7 @@ async def predict_banana(file: UploadFile = File(...)):
         banana_prob = 1 - clf_pred
         print(f"Probabilidad de ser plátano: {banana_prob:.4f}")
         
-       # Si no es plátano - ahora con Field(None)
+        # Si no es plátano
         if banana_prob < 0.5:
             return PredictionResult(
                 is_banana=False,
@@ -160,10 +165,6 @@ async def predict_banana(file: UploadFile = File(...)):
         with torch.no_grad():
             days = max(0, round(model_reg(img_reg).item(), 1))
         
-        # Asegurarse de que days_remaining no sea None
-        if days is None or not isinstance(days, (int, float)):
-            raise ValueError("El valor de 'days_remaining' no es válido.")
-        
         return PredictionResult(
             is_banana=True,
             days_remaining=days,
@@ -177,6 +178,7 @@ async def predict_banana(file: UploadFile = File(...)):
             status_code=500,
             detail=f"Error procesando la imagen: {str(e)}"
         )
+
 # Endpoint de verificación de salud
 @app.get("/health")
 async def health_check():

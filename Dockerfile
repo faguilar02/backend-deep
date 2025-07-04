@@ -20,5 +20,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copia la aplicación
 COPY . .
 
-# Usa la variable PORT de Render (CRÍTICO)
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+# Usa la variable PORT de Render (solución definitiva)
+CMD exec uvicorn app.main:app --host 0.0.0.0 --port $PORT
