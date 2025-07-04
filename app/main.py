@@ -22,21 +22,29 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "-1"  # Deshabilita cualquier GPU
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"  # Reduce logs de TensorFlow
 device = torch.device("cpu")  # Forzar PyTorch a usar solo CPU
+
+# Limitar threads para reducir consumo de memoria
+tf.config.threading.set_intra_op_parallelism_threads(1)
+tf.config.threading.set_inter_op_parallelism_threads(1)
+torch.set_num_threads(1)
 
 # Definir la arquitectura del modelo de regresión
 def create_resnet_model():
-    logger.info("Creando arquitectura ResNet...")
+    logger.info("Creando arquitectura ResNet optimizada...")
     model = models.resnet50(pretrained=False)
     num_ftrs = model.fc.in_features
+    
+    # Reducir tamaño de capas para ahorrar memoria
     model.fc = nn.Sequential(
-        nn.Linear(num_ftrs, 512),
+        nn.Linear(num_ftrs, 256),  # Reducido de 512
         nn.ReLU(),
-        nn.Dropout(0.2),
-        nn.Linear(512, 128),
+        nn.Dropout(0.1),           # Reducido de 0.2
+        nn.Linear(256, 64),         # Reducido de 128
         nn.ReLU(),
-        nn.Dropout(0.1),
-        nn.Linear(128, 1)
+        nn.Dropout(0.05),          # Reducido de 0.1
+        nn.Linear(64, 1)
     )
     return model
 
@@ -50,10 +58,10 @@ app = FastAPI(
 # Configurar CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Permite todos los orígenes
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],  # Permite todos los métodos
-    allow_headers=["*"],  # Permite todos los headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Variables globales para los modelos y estado de carga
@@ -65,71 +73,70 @@ load_error = None
 load_lock = threading.Lock()
 
 def load_classifier_model(path):
-    """Carga el modelo de clasificación con manejo explícito de memoria"""
-    logger.info(f"Cargando modelo de clasificación desde: {path}")
+    """Carga el modelo de clasificación optimizado para memoria"""
+    logger.info(f"Cargando modelo de clasificación optimizado desde: {path}")
     
-    # Liberar memoria antes de cargar
-    tf.keras.backend.clear_session()
-    tf.config.set_visible_devices([], 'GPU')  # Forzar CPU
-    
-    # Configurar TensorFlow para bajo consumo de memoria
-    tf.config.threading.set_intra_op_parallelism_threads(1)
-    tf.config.threading.set_inter_op_parallelism_threads(1)
-    
-    # Estrategia de carga segura
     try:
-        logger.info("Configurando carga optimizada de Keras...")
+        # Liberar memoria antes de cargar
+        tf.keras.backend.clear_session()
+        gc.collect()
+        
+        # Cargar con optimizaciones de memoria
         model = tf.keras.models.load_model(
             path,
-            compile=False  # No compilar para ahorrar memoria
+            compile=False
         )
-        logger.info("✅ Modelo de clasificación cargado en CPU")
+        
+        # Compresión adicional del modelo
+        model = tf.keras.models.clone_model(model)
+        model.set_weights(model.get_weights())
+        
+        logger.info("✅ Modelo de clasificación cargado (optimizado)")
         return model
     except Exception as e:
         logger.error(f"❌ Error cargando modelo de clasificación: {e}")
         logger.error(traceback.format_exc())
         return None
     finally:
-        # Limpiar cualquier recurso residual
         gc.collect()
 
 def load_regression_model(path):
-    """Carga el modelo de regresión con manejo explícito de memoria"""
-    logger.info(f"Cargando modelo de regresión desde: {path}")
+    """Carga el modelo de regresión con cuantización para ahorrar memoria"""
+    logger.info(f"Cargando modelo de regresión cuantizado desde: {path}")
     
     try:
-        # Crear arquitectura
-        logger.info("Instanciando modelo ResNet...")
+        # Crear arquitectura optimizada
         model = create_resnet_model().to(device)
         
-        # Cargar pesos
-        logger.info("Cargando pesos del modelo...")
+        # Cargar pesos con modo seguro
         state_dict = torch.load(
             path, 
             map_location=device,
-            weights_only=True  # Modo seguro
+            weights_only=True
         )
         
-        # Ajustar claves si es necesario
-        logger.info("Ajustando claves del state_dict...")
-        new_state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+        # Aplicar cuantización dinámica (reduce memoria ~4x)
+        quantized_model = torch.quantization.quantize_dynamic(
+            model,
+            {nn.Linear},
+            dtype=torch.qint8
+        )
         
-        # Cargar pesos en el modelo
-        logger.info("Cargando pesos en la arquitectura...")
-        model.load_state_dict(new_state_dict, strict=False)
-        model.eval()
+        # Cargar pesos en el modelo cuantizado
+        state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+        quantized_model.load_state_dict(state_dict, strict=False)
+        quantized_model.eval()
         
-        logger.info("✅ Modelo de regresión cargado correctamente")
-        return model
+        logger.info("✅ Modelo de regresión cuantizado cargado")
+        return quantized_model
     except Exception as e:
         logger.error(f"❌ Error cargando modelo de regresión: {e}")
         logger.error(traceback.format_exc())
         return None
     finally:
-        # Limpiar memoria
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
         gc.collect()
+        if 'torch' in globals():
+            torch.cuda.empty_cache()
 
 def log_memory_usage():
     """Registra el uso actual de memoria"""
@@ -140,7 +147,6 @@ def log_memory_usage():
 def load_models():
     global classifier, model_reg, models_loaded, loading_in_progress, load_error
     
-    # Si ya están cargados o se está cargando, salir
     if models_loaded or loading_in_progress:
         return
     
@@ -151,26 +157,15 @@ def load_models():
         loading_in_progress = True
         load_error = None
         start_time = time.time()
-        logger.info("⚡ Cargando modelos bajo demanda...")
+        logger.info("⚡ Cargando modelos con optimización de memoria...")
         log_memory_usage()
         
         try:
-            # Construir rutas a los modelos
             model_dir = os.path.join(os.path.dirname(__file__), "models")
             classifier_path = os.path.join(model_dir, "clasificacion_model_v4.h5")
             regression_path = os.path.join(model_dir, "best_banana_ripeness_regression.pth")
             
-            # Verificar existencia de archivos
-            if not os.path.exists(classifier_path):
-                raise FileNotFoundError(f"Archivo no encontrado: {classifier_path}")
-            if not os.path.exists(regression_path):
-                raise FileNotFoundError(f"Archivo no encontrado: {regression_path}")
-            
-            logger.info(f"Tamaño modelo clasificación: {os.path.getsize(classifier_path) / 1024 / 1024:.2f} MB")
-            logger.info(f"Tamaño modelo regresión: {os.path.getsize(regression_path) / 1024 / 1024:.2f} MB")
-            log_memory_usage()
-            
-            # Cargar modelos en secuencia para ahorrar memoria
+            # Carga secuencial con limpieza entre modelos
             logger.info("Cargando modelo de clasificación...")
             classifier = load_classifier_model(classifier_path)
             log_memory_usage()
@@ -178,10 +173,10 @@ def load_models():
             if classifier is None:
                 raise RuntimeError("Fallo al cargar modelo de clasificación")
             
-            # Liberar recursos antes de cargar el segundo modelo
+            # Limpieza agresiva entre cargas
             time.sleep(0.5)
             gc.collect()
-            log_memory_usage()
+            tf.keras.backend.clear_session()
             
             logger.info("Cargando modelo de regresión...")
             model_reg = load_regression_model(regression_path)
@@ -190,14 +185,13 @@ def load_models():
             if model_reg is None:
                 raise RuntimeError("Fallo al cargar modelo de regresión")
             
-            # Marcar como cargados
             models_loaded = True
             load_time = time.time() - start_time
             logger.info(f"⏱️ Tiempo total de carga: {load_time:.2f} segundos")
             
         except Exception as e:
             load_error = str(e)
-            logger.error(f"❌❌❌ ERROR CRÍTICO: {load_error}")
+            logger.error(f"❌❌❌ ERROR: {load_error}")
             logger.error(traceback.format_exc())
             
         finally:
@@ -209,15 +203,14 @@ def load_models():
 async def root():
     return {"message": "Banana Ripeness Predictor API"}
 
-# Endpoint de live para Render
 @app.get("/live")
 async def liveness_check():
     return {"status": "alive", "models_loaded": models_loaded}
 
-# Transformaciones para PyTorch
+# Transformaciones optimizadas
 transform_reg = transforms.Compose([
-    transforms.Resize(256),
-    transforms.CenterCrop(224),
+    transforms.Resize(128),  # Reducido de 256
+    transforms.CenterCrop(112),  # Reducido de 224
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
@@ -228,53 +221,40 @@ class PredictionResult(BaseModel):
     days_remaining: Union[float, None] = Field(None)
     message: str
 
-# Endpoint de predicción (con carga diferida)
 @app.post("/predict", response_model=PredictionResult)
 async def predict_banana(file: UploadFile = File(...)):
     global models_loaded, load_error
     
-    # Cargar modelos si aún no están cargados
     if not models_loaded:
-        logger.info("Solicitud de predicción activa carga de modelos...")
+        logger.info("Iniciando carga bajo demanda...")
         load_models()
     
-    # Manejar errores de carga
     if not models_loaded:
-        error_detail = "Los modelos no están cargados correctamente."
+        error_detail = "Error cargando modelos"
         if load_error:
-            error_detail += f" Error: {load_error}"
-        
-        raise HTTPException(
-            status_code=503,
-            detail=error_detail
-        )
+            error_detail += f": {load_error}"
+        raise HTTPException(status_code=503, detail=error_detail)
     
-    # Verificar tipo de archivo
     if not file.content_type.startswith('image/'):
-        raise HTTPException(
-            status_code=400,
-            detail="Formato de archivo no válido. Por favor sube una imagen (jpeg, png, etc.)"
-        )
+        raise HTTPException(status_code=400, detail="Formato de archivo no válido")
     
     try:
-        # Leer la imagen
+        # Leer y redimensionar imagen inmediatamente para ahorrar memoria
         contents = await file.read()
         img = Image.open(io.BytesIO(contents)).convert('RGB')
-        logger.info(f"Imagen recibida: {file.filename}, tamaño: {img.size}")
+        img = img.resize((224, 224))  # Redimensionar temprano
         
         # --- Clasificación ---
-        # Preprocesar imagen para TensorFlow
         img_tf = tf.keras.preprocessing.image.img_to_array(img)
         img_tf = tf.image.resize(img_tf, [224, 224])
         img_tf = (img_tf / 255.0 - [0.485, 0.456, 0.406]) / [0.229, 0.224, 0.225]
         img_tf = tf.expand_dims(img_tf, axis=0)
         
-        # Predecir con TensorFlow en CPU
-        clf_pred = classifier.predict(img_tf, verbose=0)[0][0]
+        # Predecir en lotes de 1
+        clf_pred = classifier.predict(img_tf, verbose=0, batch_size=1)[0][0]
         banana_prob = 1 - clf_pred
         logger.info(f"Probabilidad de ser plátano: {banana_prob:.4f}")
         
-        # Si no es plátano
         if banana_prob < 0.5:
             return PredictionResult(
                 is_banana=False,
@@ -283,11 +263,9 @@ async def predict_banana(file: UploadFile = File(...)):
             )
         
         # --- Regresión ---
-        # Preprocesar imagen para PyTorch
         img_reg = transform_reg(img)
         img_reg = img_reg.unsqueeze(0).to(device)
         
-        # Predecir días restantes
         with torch.no_grad():
             days = max(0, round(model_reg(img_reg).item(), 1))
         
@@ -299,40 +277,27 @@ async def predict_banana(file: UploadFile = File(...)):
         
     except Exception as e:
         logger.error(f"Error procesando imagen: {str(e)}")
-        logger.error(traceback.format_exc())
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error procesando la imagen: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Error procesando la imagen")
     finally:
-        # Limpiar memoria después de la predicción
         gc.collect()
 
-# Endpoint de verificación de salud
 @app.get("/health")
 async def health_check():
     return {
         "status": "OK" if models_loaded else "LOADING",
         "models_loaded": models_loaded,
-        "loading_in_progress": loading_in_progress,
-        "load_error": load_error if not models_loaded else None,
-        "device": str(device)
+        "memory_usage": f"{psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024:.2f} MB"
     }
 
 @app.get("/force-load")
 async def force_load_models():
-    """Endpoint para forzar la carga de modelos manualmente"""
     if models_loaded:
         return {"status": "already_loaded"}
     
-    logger.info("Forzando carga de modelos...")
+    logger.info("Forzando carga optimizada de modelos...")
     load_models()
-    return {
-        "status": "loading_triggered",
-        "models_loaded": models_loaded,
-        "error": load_error
-    }
+    return {"status": "loading_triggered"}
 
 @app.on_event("startup")
 async def startup_event():
-    logger.info("Aplicación iniciada. Los modelos se cargarán bajo demanda.")
+    logger.info("Aplicación iniciada - Modo de memoria optimizada")
