@@ -11,6 +11,7 @@ import torch.nn as nn
 from pydantic import BaseModel, Field
 from typing import Union
 import os
+import socket
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "-1"  # Deshabilita cualquier GPU
 device = torch.device("cpu")  # Forzar PyTorch a usar solo CPU
@@ -46,7 +47,7 @@ app.add_middleware(
     allow_headers=["*"],  # Permite todos los headers
 )
 
-# Endpoint raíz para verificación de inicio (CRÍTICO PARA RENDER)
+# Endpoint raíz para verificación de inicio
 @app.get("/")
 async def root():
     return {"message": "Banana Ripeness Predictor API is initializing. Please wait."}
@@ -55,12 +56,17 @@ async def root():
 classifier = None
 model_reg = None
 
-# Cargar modelos al iniciar
+# Cargar modelos al iniciar (CORRECCIÓN CRÍTICA AQUÍ)
 @app.on_event("startup")
-async def startup_event():
-    print("⚡ Evento startup iniciado")
 async def load_models():
     global classifier, model_reg
+    print("⚡ Evento startup iniciado - Cargando modelos...")
+    
+    # Diagnóstico inicial
+    hostname = socket.gethostname()
+    print(f"🔍 Hostname: {hostname}")
+    print(f"🔍 PORT env var: {os.getenv('PORT', 'No definido')}")
+    print(f"🔍 Directorio actual: {os.getcwd()}")
     
     # Limpiar sesión de TensorFlow
     tf.keras.backend.clear_session()
@@ -76,12 +82,21 @@ async def load_models():
     print(f"Intentando cargar modelo de clasificación desde: {classifier_path}")
     print(f"Intentando cargar modelo de regresión desde: {regression_path}")
     
+    # Verificar existencia de archivos
+    try:
+        print(f"¿Existe clasificacion_model_v4.h5? {os.path.exists(classifier_path)}")
+        print(f"¿Existe best_banana_ripeness_regression.pth? {os.path.exists(regression_path)}")
+        print(f"Contenido de {model_dir}: {os.listdir(model_dir)}")
+    except Exception as e:
+        print(f"❌ Error verificando archivos: {e}")
+    
     # Cargar modelo de clasificación en CPU
     try:
         classifier = tf.keras.models.load_model(classifier_path)
         print("✅ Modelo de clasificación cargado en CPU")
     except Exception as e:
         print(f"❌ Error cargando modelo de clasificación: {e}")
+        print(f"Detalle completo: {str(e)}")
         classifier = None
     
     # Cargar modelo de regresión
@@ -94,9 +109,10 @@ async def load_models():
         print("✅ Modelo de regresión cargado correctamente")
     except Exception as e:
         print(f"❌ Error cargando modelo de regresión: {e}")
+        print(f"Detalle completo: {str(e)}")
         model_reg = None
 
-    # AGREGAR ESTO AL FINAL
+    # Verificación final
     print("="*50)
     print(f"✅ Clasificador cargado: {classifier is not None}")
     print(f"✅ Modelo regresión cargado: {model_reg is not None}")
@@ -198,10 +214,12 @@ async def health_check():
         "device": str(device)
     }
 
-
 @app.get("/test")
 async def test_endpoint():
     return {
         "status": "OK",
-        "port_info": f"La aplicación debería estar en el puerto {os.getenv('PORT', 8000)}"
+        "port_info": f"La aplicación debería estar en el puerto {os.getenv('PORT', 8000)}",
+        "working_dir": os.getcwd(),
+        "files_in_app": os.listdir("app"),
+        "files_in_models": os.listdir("app/models") if os.path.exists("app/models") else "No existe"
     }
