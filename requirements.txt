@@ -8,3 +8,4 @@ python-multipart
 pydantic
 numpy
 matplotlib
+psutil
